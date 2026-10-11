@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated**: 2026-03-20
+> **Last updated**: 2026-10-12
 >
 > This roadmap reflects current priorities. For the ecosystem-wide view, see the
 > [CUBRID Labs Ecosystem Roadmap](https://github.com/cubrid-lab/.github/blob/main/ROADMAP.md).
@@ -14,13 +14,14 @@
 ## Next Release — v1.0 — Complete Examples
 
 - All framework examples verified working end-to-end
-- Rust examples added after crates.io publish (cubrid-rs, sea-orm-cubrid)
 - Comprehensive documentation for each recipe
 - Docker Compose setup for all examples
 - Error handling best practices in every example
 
 ## Compatibility
 
-- Examples cover Python, TypeScript, Go, and Rust
-- All examples tested against CUBRID 11.2 via Docker
-- Framework versions: FastAPI, Flask, Django, Pandas, Streamlit, Celery (Python); Drizzle (TS); GORM (Go)
+- This repository contains Python examples only; see the
+  [README](README.md) for the current fundamentals and framework templates.
+- Tested CUBRID and Python versions, and which CI tier verifies each recipe,
+  are listed in [SUPPORT_MATRIX.md](SUPPORT_MATRIX.md); not every recipe runs
+  on every version or event.
