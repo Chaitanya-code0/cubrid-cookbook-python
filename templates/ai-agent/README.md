@@ -11,7 +11,7 @@ agents, combined with the CUBRID MCP server to build the full
 | `01_agent_state.py` | Store agent sessions, messages, and tool calls in CUBRID | pycubrid, JSON columns, SET |
 | `02_mcp_toolchain.py` | Invoke the MCP server programmatically (no Claude required) | cubrid-mcp-server, subprocess |
 | `03_rag_metadata.py` | RAG document store — full text, metadata, chunk tracking | pycubrid, JSON, SET, SEQUENCE |
-| `04_agent_loop.py` | Query → think → act → observe agent cycle | pycubrid, agent state |
+| `04_agent_loop.py` | Query → think → act → observe agent cycle (direct pycubrid execution; no MCP server) | pycubrid, agent state |
 | `05_chatbot_backend.py` | Chatbot backend — conversation history and user preferences | SQLAlchemy ORM, JSON columns |
 
 ## Quick Start
@@ -95,8 +95,8 @@ User Query
 ┌─────────────────────────────────┐
 │  AI Agent (Python)              │
 │  ┌───────────┐  ┌────────────┐ │
-│  │ Think     │→ │ Act (MCP)  │ │
-│  │ (LLM)     │  │ (read-only)│ │
+│  │ Think     │→ │ Act        │ │
+│  │ (LLM)     │  │ (tools)    │ │
 │  └───────────┘  └────────────┘ │
 │       ↓               ↓        │
 │  ┌───────────┐  ┌────────────┐ │
@@ -113,6 +113,19 @@ User Query
 │  └──────────────────────────┘  │
 └─────────────────────────────────┘
 ```
+
+The `02_mcp_toolchain.py` example invokes the CUBRID MCP server and its
+read-only whitelist. The `04_agent_loop.py` example uses the same tool names
+for planning but executes them directly through pycubrid; it does not provide
+MCP server or whitelist enforcement.
+
+> **Warning:** `execute_query` in `04_agent_loop.py` runs whatever SQL it is
+> given, and recipes 01–04 connect as `dba` by default. Once a real LLM writes
+> that SQL (see [Connecting a Real LLM](#connecting-a-real-llm)), it can modify
+> or drop data. Before connecting one, route the tool calls through
+> `cubrid-mcp-server` in read-only mode as `02_mcp_toolchain.py` does, or
+> validate the statement as a read-only query yourself, and connect as a
+> least-privilege user.
 
 ## Why CUBRID for AI Agents
 
