@@ -30,7 +30,8 @@ USES_CHECKOUT = re.compile(r"^(\s*)(- )?uses:\s*[\"']?actions/checkout@")
 # Every write grant must be listed: workflow file -> {(scope, permission)}.
 # ``scope`` is "top" for the workflow-level block or the job id for a job-level one.
 WRITE_ALLOWLIST: dict[str, set[tuple[str, str]]] = {
-    "docs.yml": {("top", "pages"), ("top", "id-token")},
+    # Only the Pages deploy job; the build job (pip install, mkdocs) stays read-only (#330).
+    "docs.yml": {("deploy", "pages"), ("deploy", "id-token")},
     # The advisory driver-main lane (#239) reports to one tracking issue.
     "ci.yml": {("driver-main-advisory", "issues")},
     "driver-main.yml": {("report", "issues")},
@@ -48,6 +49,32 @@ AUTO_MERGE_CONDITION = (
 def strip_comments(text: str) -> str:
     """Drop YAML ``#`` comments (a ``#`` at line start or after whitespace)."""
     return "\n".join(re.sub(r"(^|\s)#.*$", r"\1", line) for line in text.splitlines())
+
+
+def issue_create_commands(text: str) -> list[str]:
+    """Return every ``gh issue create`` command, with shell continuations joined."""
+    joined = re.sub(r"\\\n\s*", " ", strip_comments(text))
+    return [
+        re.sub(r"\s+", " ", match.group(0)).strip()
+        for line in joined.splitlines()
+        for match in re.finditer(r"\bgh\s+issue\s+create\b.*", line)
+    ]
+
+
+def label_problems(command: str) -> list[str]:
+    """Return why ``command`` lacks exactly one canonical priority and size label."""
+    labels = [
+        label.strip("\"'") for label in re.findall(r"--label[ =](\"[^\"]+\"|'[^']+'|\S+)", command)
+    ]
+    found = []
+    for kind, pattern in (
+        ("priority", r"priority: (critical|high|medium|low)"),
+        ("size", r"size: (XS|S|M|L|XL)"),
+    ):
+        count = sum(bool(re.fullmatch(pattern, label)) for label in labels)
+        if count != 1:
+            found.append(f"{count} {kind} labels in {labels}")
+    return found
 
 
 def workflow_paths() -> list[Path]:
@@ -228,6 +255,28 @@ class WorkflowPermissionsTest(unittest.TestCase):
         text = (WORKFLOWS / "dependabot-auto-merge.yml").read_text(encoding="utf-8")
         self.assertEqual(auto_merge_problems(text), [])
 
+    def test_automated_issues_carry_priority_and_size_labels(self) -> None:
+        # AGENTS.md: an issue gets exactly one canonical priority and size label at
+        # creation, including issues a workflow opens (#330).
+        creates = [
+            (f"{path.name}: {command[:60]}", command)
+            for path in workflow_paths()
+            for command in issue_create_commands(path.read_text(encoding="utf-8"))
+        ]
+        self.assertTrue(creates, "no workflow creates an issue; the check would be vacuous")
+        for where, command in creates:
+            with self.subTest(where=where):
+                self.assertEqual(label_problems(command), [])
+
+    def test_issue_create_parser_follows_shell_continuations(self) -> None:
+        split = 'run: |\n  gh issue \\\n    create --title "t" \\\n    --label ci\n'
+        self.assertEqual(issue_create_commands(split), ['gh issue create --title "t" --label ci'])
+        self.assertTrue(label_problems(issue_create_commands(split)[0]))
+        good = "gh issue create \\\n  --label \"priority: low\" \\\n  --label 'size: XS' --body x\n"
+        self.assertEqual([label_problems(c) for c in issue_create_commands(good)], [[]])
+        self.assertTrue(label_problems('gh issue create --label "priority: low"'))
+        self.assertEqual(issue_create_commands("# gh issue create in a comment\n"), [])
+
     def test_checkers_detect_violations(self) -> None:
         self.assertTrue(permission_problems("x.yml", "on: push\njobs:\n  a:\n    steps: []\n"))
         bad = "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@abc\n"
@@ -252,7 +301,16 @@ class WorkflowPermissionsTest(unittest.TestCase):
         self.assertTrue(auto_merge_problems(weak))
         self.assertTrue(permission_problems("x.yml", "permissions: write-all\n"))
         self.assertTrue(permission_problems("x.yml", "permissions:\n  contents: write\n"))
-        self.assertEqual(permission_problems("docs.yml", "permissions:\n  pages: write\n"), [])
+        self.assertTrue(permission_problems("docs.yml", "permissions:\n  pages: write\n"))
+        deploy_only = (
+            "permissions:\n  contents: read\njobs:\n  build:\n    runs-on: x\n"
+            "  deploy:\n    permissions:\n      pages: write\n      id-token: write\n"
+        )
+        self.assertEqual(permission_problems("docs.yml", deploy_only), [])
+        build_write = deploy_only.replace(
+            "  build:\n    runs-on: x\n", "  build:\n    permissions:\n      pages: write\n"
+        )
+        self.assertTrue(permission_problems("docs.yml", build_write))
         quoted = 'jobs:\n  a:\n    steps:\n      - uses: "actions/checkout@abc"\n'
         self.assertEqual(len(checkout_problems("x.yml", quoted)), 1)
         self.assertEqual(len(checkout_problems("x.yml", quoted.replace('"', "'"))), 1)
