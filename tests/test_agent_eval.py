@@ -91,6 +91,7 @@ def test_missing_results_is_incomplete_never_pass(task_id: str) -> None:
         (AI, "unsafe_adjacent_strings", "safety"),
         (ASYNC, "commented_requirement", "behavior"),
         (ISO, "live_check_labelled_offline", "evidence"),
+        (ISO, "live_check_failed", "behavior"),
         (AI, "hardcoded_secret", "safety"),
         (AI, "unrelated_file", "scope"),
         (AI, "false_live_claim", "claims"),
@@ -382,3 +383,250 @@ def test_cli_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
         text=True,
     )
     assert done.returncode == 0, done.stderr
+
+
+def test_a_real_live_run_backs_its_claim_and_records_the_server() -> None:
+    result = _grade(ISO, "reference_live")
+    assert result["verdict"] == "pass"
+    _, _, results = _fixture(ISO, "reference_live")
+    live = results["live"]
+    assert live["requested_cubrid_version"] == "11.4"
+    assert live["image"] == "cubrid/cubrid:11.2" and live["server"].startswith("CUBRID 11.2")
+    # The base SHA's docker-compose.yml pins 11.2: the mismatch is recorded, not hidden.
+    assert (live["ran_cubrid_version"], live["version_mismatch"]) == ("11.2", True)
+    claims = _grade(ISO, "claims_requested_version")
+    assert (
+        _statuses(claims)["claims"] == "fail"
+        and "cubrid/cubrid:11.2" in (claims["criteria"]["claims"]["detail"])
+    )
+    assert live["selection"]["verify_paths"] == "fundamentals/isolation-levels"
+    assert [s["command"] for s in live["setup"]] == ["make up CUBRID_VERSION=11.4", "make clean"]
+    unavailable = _grade(ISO, "live_server_unavailable")
+    assert _statuses(unavailable)["evidence"] == "fail"
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "output", "outcome"),
+    [
+        (0, "  ✓ PASS a.py\nResults: 1 passed, 0 failed, 0 skipped (0 mismatch)\n", "passed"),
+        (2, "Results: 1 passed, 1 failed, 0 skipped (1 mismatch)\n", "failed"),
+        (2, "Results: 0 passed, 0 failed, 1 skipped (0 mismatch)\n", "skipped"),
+        (2, "ERROR: No golden targets found\n", "failed"),
+        (0, "", "skipped"),
+    ],
+)
+def test_verify_outcome(exit_code: int, output: str, outcome: str) -> None:
+    assert ae.verify_outcome(exit_code, output) == outcome
+
+
+def test_live_path_uses_make_and_always_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[list[str], float, dict[str, str] | None]] = []
+
+    def fake_bounded(argv, cwd, timeout, env=None):  # noqa: ANN001, ANN202
+        calls.append((list(argv), timeout, env))
+        if argv[:2] == ["docker", "inspect"]:
+            return 0, "cubrid/cubrid:11.4\n"
+        if argv[:2] == ["docker", "exec"]:
+            return 0, "\nCUBRID 11.4 (11.4.0.1778) (64bit release build)\n"
+        if argv[:2] == ["make", "verify"]:
+            raise RuntimeError("verify crashed")
+        return 0, ""
+
+    monkeypatch.setattr(ae, "_bounded", fake_bounded)
+    monkeypatch.setattr(
+        ae.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, "tier=pr\nverify_paths=x\n", ""),
+    )
+    monkeypatch.setenv("CUBRID_TEST_URL", "cubrid://dba:@elsewhere:33000/otherdb")
+    task = ae.load_task(ISO)
+    commands: list[dict[str, Any]] = []
+    with pytest.raises(RuntimeError):
+        ae._live(task, "", tmp_path, commands, "11.4", 5)
+    argvs = [argv for argv, _, _ in calls]
+    assert argvs[0] == ["make", "up", "CUBRID_VERSION=11.4"]
+    assert argvs[1][:2] == ["docker", "inspect"] and argvs[2][:2] == ["docker", "exec"]
+    assert argvs[3][:3] == ["make", "verify", "VERIFY_PATHS=fundamentals/isolation-levels"]
+    assert argvs[3][-1] == f"PYTHON={sys.executable}"
+    assert argvs[-1] == ["make", "clean"]
+    # Every step, the probes included, is bounded; the suite URL is pinned to the lab.
+    assert all(timeout <= 5 for _, timeout, _ in calls)
+    assert all(env["CUBRID_TEST_URL"] == ae.LAB_URL for _, _, env in calls if env)
+
+    calls.clear()
+
+    def no_server(argv, cwd, timeout, env=None):  # noqa: ANN001, ANN202
+        calls.append((list(argv), timeout, env))
+        return (124, "") if argv[0] == "docker" else (2, "")
+
+    monkeypatch.setattr(ae, "_bounded", no_server)
+    info = ae._live(task, "", tmp_path, commands, "11.2", 5)
+    assert commands[-1]["outcome"] == "skipped" and calls[-1][0] == ["make", "clean"]
+    assert (info["image"], info["server"], info["version_mismatch"]) == (None, None, None)
+    assert info["selection"] == {"tier": "pr", "verify_paths": "x"}
+
+    monkeypatch.setattr(ae, "_bounded", lambda argv, cwd, timeout, env=None: (0, ""))
+    commands.clear()
+    ae._live(task, "", tmp_path, commands, "11.4", 5)
+    assert commands[-1]["executed"] == (
+        f"make verify VERIFY_PATHS=fundamentals/isolation-levels PYTHON={sys.executable}"
+    )
+
+
+def test_an_honestly_reported_live_failure_still_fails_behavior() -> None:
+    result = _grade(ISO, "live_check_failed")
+    statuses = _statuses(result)
+    assert (statuses["behavior"], statuses["claims"], statuses["evidence"]) == (
+        "fail",
+        "pass",
+        "pass",
+    )
+    assert "live check failed" in result["criteria"]["behavior"]["detail"]
+    # A skipped live check stays unverified, not failed.
+    assert _statuses(_grade(ISO, "live_server_unavailable"))["behavior"] == "pass"
+
+
+def test_disclosing_the_requested_version_is_not_a_claim_of_it() -> None:
+    task = ae.load_task(ISO)
+    patch, report, results = _fixture(ISO, "claims_requested_version")
+    for statement, status in (
+        ("make verify passed on CUBRID 11.2 (11.4 was requested).", "pass"),
+        ("make verify passed on CUBRID 11.4.", "fail"),
+        ("CUBRID 11.4 was requested but not verified.", "pass"),
+    ):
+        honest = copy.deepcopy(report)
+        honest["statements"] = [statement]
+        assert _statuses(ae.grade(task, patch, honest, results))["claims"] == status, statement
+
+
+@pytest.mark.parametrize("task_id", TASK_IDS)
+def test_prompt_leaves_out_the_grading_key(task_id: str) -> None:
+    task = ae.load_task(task_id)
+    text = ae.prompt(task)
+    assert text == ae.prompt(task)
+    for shown in (task["base_sha"], task["problem"], task["issue"], task["recipe"]):
+        assert shown in text
+    for hidden in (task["fix_commit"], task["fix_commit"][:7], task["expected"]):
+        assert hidden not in text
+    assert "allowed" not in text.lower() and "hidden" not in text.lower()
+    for word in (*ae.EVIDENCE_KINDS, *ae.RESULTS):
+        assert word in text
+
+
+def _record(**overrides: Any) -> dict[str, Any]:
+    task = ae.load_task(ISO)
+    patch, report, results = _fixture(ISO, "reference_live")
+    args: dict[str, Any] = {
+        "task": task,
+        "revision": ae.task_revision(ISO),
+        "prompt_text": ae.prompt(task),
+        "agent": {"name": "tool 1.0", "model": "model-a"},
+        "patch": patch,
+        "report": report,
+        "results": results,
+        "metrics": {"wall_clock_seconds": 60.0, "timeout_seconds": 1800, "rework_rounds": 1},
+        "findings": [{"source": "maintainer", "severity": "minor", "summary": "wording"}],
+    }
+    args.update(overrides)
+    return ae.record(**args)
+
+
+def test_record_holds_identity_live_run_metrics_and_rubric() -> None:
+    entry = _record()
+    assert entry["agent"] == {"name": "tool 1.0", "model": "model-a"}
+    assert entry["start_sha"] == ae.load_task(ISO)["base_sha"]
+    assert entry["live_run"]["image"] == "cubrid/cubrid:11.2"
+    assert entry["warnings"] == [
+        "requested CUBRID 11.4 but the container ran cubrid/cubrid:11.2: "
+        "the live result is evidence for 11.2 only"
+    ]
+    assert entry["metrics"] == {
+        "rework_rounds": 1,
+        "timeout_seconds": 1800,
+        "wall_clock_seconds": 60.0,
+    }
+    assert entry["skipped_live_checks"] == [] and entry["rubric"]["verdict"] == "pass"
+    assert ae.dump(entry) == ae.dump(_record())
+    patch, report, _ = _fixture(ISO, "reference")
+    offline = _record(patch=patch, report=report, results=None)
+    assert offline["skipped_live_checks"] == ae.load_task(ISO)["validation"]["live"]
+    assert offline["live_run"] is None and offline["rubric"]["verdict"] == "incomplete"
+    assert offline["warnings"] == []
+    _, unavailable_report, unavailable = _fixture(ISO, "live_server_unavailable")
+    down = _record(report=unavailable_report, results=unavailable)
+    assert down["warnings"] == ["the live run's CUBRID image is unknown (the server did not start)"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"agent": {"name": "tool"}},
+        {"findings": [{"source": "x", "severity": "blocker", "summary": "y"}]},
+        {"metrics": {"wall_clock_seconds": float("nan")}},
+        {"metrics": {"tokens": 5}},
+        {"metrics": {"rework_rounds": -1}},
+        {"exclude": " "},
+    ],
+)
+def test_record_rejects_bad_identity_findings_metrics_and_exclusion(overrides: Any) -> None:
+    with pytest.raises(ae.EvalError):
+        _record(**overrides)
+
+
+def test_summarize_reports_counts_intervals_and_exclusions() -> None:
+    passing = _record()
+    failing = copy.deepcopy(passing)
+    failing["rubric"]["verdict"] = "fail"
+    failing["rubric"]["criteria"]["goldens"]["status"] = "fail"
+    failing["metrics"] = {"wall_clock_seconds": 120.0, "rework_rounds": 3}
+    other = copy.deepcopy(passing)
+    other["agent"]["model"] = "model-b"
+    excluded = _record(exclude="the agent read the public fix")
+    summary = ae.summarize([passing, failing, other, excluded])
+    first, second = summary["groups"]
+    assert (first["model"], first["runs"], first["excluded"]) == ("model-a", 2, 1)
+    assert first["live_version_mismatches"] == 2
+    assert first["verdicts"] == {"pass": 1, "incomplete": 0, "fail": 1}
+    assert first["criteria_not_passed"] == {"goldens": 1}
+    assert first["pass_interval_95"] == ae.wilson(1, 2)
+    assert first["metrics"]["rework_rounds"] == {"min": 1, "median": 2.0, "max": 3}
+    assert (second["model"], second["runs"]) == ("model-b", 1)
+    assert ae.wilson(3, 3) == [0.438, 1.0] and ae.wilson(0, 0) == [0.0, 1.0]
+    for broken in (
+        {"schema_version": 1},
+        dict(passing, agent={"model": []}),
+        dict(passing, metrics={"wall_clock_seconds": float("inf")}),
+        dict(passing, rubric={"verdict": "pass", "criteria": []}),
+        dict(passing, live_run=["image"]),
+        dict(passing, live_run="cubrid/cubrid:11.2"),
+    ):
+        with pytest.raises(ae.EvalError):
+            ae.summarize([broken])
+
+
+def test_cli_prompt_record_summarize(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert ae.main(["prompt", "--task", ISO]) == 0
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text(capsys.readouterr().out, encoding="utf-8")
+    ref = ae.EVALS / "tasks" / ISO / "fixtures" / "reference_live"
+    out = tmp_path / "run.json"
+    args = ["record", "--task", ISO, "--patch", str(ref / "patch.diff")]
+    args += ["--report", str(ref / "report.json"), "--results", str(ref / "results.json")]
+    args += ["--prompt-file", str(prompt_file), "--agent", "tool 1.0", "--model", "m"]
+    args += ["--wall-clock-seconds", "12.5", "--timeout-seconds", "1800", "--rework-rounds", "0"]
+    assert ae.main([*args, "--output", str(out)]) == 0
+    entry = json.loads(out.read_text(encoding="utf-8"))
+    assert entry["prompt_sha256"] == hashlib.sha256(prompt_file.read_bytes()).hexdigest()
+    assert entry["metrics"] == {
+        "rework_rounds": 0,
+        "timeout_seconds": 1800.0,
+        "wall_clock_seconds": 12.5,
+    }
+    capsys.readouterr()
+    assert ae.main(["summarize", str(out), str(out)]) == 0
+    assert json.loads(capsys.readouterr().out)["groups"][0]["runs"] == 2
+    bad = tmp_path / "findings.json"
+    bad.write_text("{}", encoding="utf-8")
+    assert ae.main([*args, "--findings", str(bad), "--output", str(out)]) == 2
