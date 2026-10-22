@@ -140,6 +140,67 @@ When a new recipe adds a `requirements.txt` outside the configured
 `directories` globs, extend the globs in the same PR; the test above fails
 until you do.
 
+### Spec 08-10 evidence lanes
+
+`make spec-08`, `make spec-09` and `make spec-10` (or `make spec-08-10`) rerun the
+existing template suites as one auditable lane per feature specification (#421).
+`scripts/spec_gate.py` holds the manifest and adds no test of its own; each suite
+runs in its own pytest process.
+
+| Target | Suites | Database |
+|--------|--------|----------|
+| `spec-08` | `templates/flask/*/tests`, `templates/api-service-fastapi/recipes/*/tests`; `templates/api-service-fastapi/tests` (root template startup and `/health`) | `CUBRID_TEST_URL`; the root template test uses SQLite by design and is reported as startup-only, not live evidence or quickstart coverage |
+| `spec-09` | `templates/django/tests`, `templates/async-worker/tests` | `CUBRID_TEST_URL`; Celery tasks run directly (`.run()` / eager `.apply()`), without Redis or a worker |
+| `spec-10` | `templates/dashboard/tests` | `CUBRID_DASHBOARD_TEST_URL`, a separate database: the suite drops and recreates its FK-linked tables |
+
+```bash
+# Suite dependencies (the same set the broad smoke workflow installs)
+pip install pytest pytest-asyncio httpx flask flask-sqlalchemy fastapi email-validator \
+  streamlit pandas -r templates/async-worker/requirements.txt \
+  -r templates/django/requirements.txt -r templates/api-service-fastapi/requirements.txt \
+  -r templates/dashboard/requirements.txt
+make up
+# A disposable second CUBRID for the dashboard (never your lab container)
+docker run -d --name cubrid-spec-dashboard -p 127.0.0.1:33004:33000 \
+  -e CUBRID_DB=testdb cubrid/cubrid:11.2
+export CUBRID_TEST_URL=cubrid+pycubrid://dba@localhost:33000/testdb
+export CUBRID_DASHBOARD_TEST_URL=cubrid+pycubrid://dba@localhost:33004/testdb
+make spec-08-10
+docker rm -f cubrid-spec-dashboard
+```
+
+Wait until the dashboard container accepts connections before running `spec-10`
+(the gate reports it as unreachable otherwise). The targets fail closed
+(`CUBRID_SPEC_GATE=1` by default; `1`/`true`/`yes`/`on` enable it, empty/`0`/`false`/
+`no`/`off` disable it, any other value is a usage error). Under the gate a spec fails,
+with a nonzero exit, when:
+
+- its URL is missing, unreachable or not `cubrid+pycubrid://` (no SQLite fallback),
+  or the dashboard URL names the same database as `CUBRID_TEST_URL`;
+- the database already holds any `cookbook_*` table before the run: the suites drop
+  and recreate their own tables, so use a dedicated, empty database;
+- any suite fails, collects no test or skips a test, or a suite whose conftest prints a
+  database header (the Flask, FastAPI recipe and dashboard suites) does not print
+  `database: live CUBRID (...)`. The Django and async-worker suites print no header:
+  they skip without `CUBRID_TEST_URL` (a gate failure) and fail on a
+  non-`cubrid+pycubrid` URL;
+- a suite leaves new tables behind or drops a table that existed before it ran
+  (compared with a snapshot taken just before that suite).
+
+The gate also drops `PYTEST_ADDOPTS` and `PYTEST_PLUGINS` from the suites'
+environment. Only a gated run can PASS: `CUBRID_SPEC_GATE=0 make spec-09` keeps the
+suites' own skips and SQLite fallbacks for exploration, and its summary says
+INCOMPLETE at best. After an interrupted run, drop the leftover `cookbook_*` tables
+or use a fresh container.
+
+Each run replaces only `.spec-evidence/<spec>/` (ignored by version control; other
+specs' files there are kept) with one
+JUnit XML file and log per suite plus `summary.json` and `summary.txt`: the pytest
+commands, commit SHA, the Python, driver and framework versions of the
+interpreter that runs pytest (`PYTHON`), the CUBRID server
+version and the selected/passed/failed/skipped counts per suite. These lanes are
+local and manual; CI keeps its existing live jobs (see [CI tiers](#ci-tiers)).
+
 ### CI tiers
 
 Two workflows share live CUBRID validation (#222). `scripts/ci_scope.py`
