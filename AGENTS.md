@@ -73,8 +73,8 @@ route. A submitted Copilot COMMENTED review with an actual assessment counts as
 evidence but is not formal APPROVED status. Requested/pending review, a
 boilerplate approval suggestion, self-review or CI success does not qualify.
 Validate accepted fixes at the final relevant head; leave the PR unmerged if
-the required review has not arrived. No CI check enforces this today; whether
-to add one is pending a maintainer decision (#351).
+the required review has not arrived. The `agent-review` check reports review evidence but does not automatically
+enforce review at merge (maintainer decision, 2026-10-23).
 
 **Security-sensitive paths, under every route:** changes to workflows that hold
 write permissions or that sibling repositories call to verify a release
@@ -95,9 +95,9 @@ commit (unless the PR's change against `main` is identical at both commits).
 Protected paths (every workflow and composite action, `.github/dependabot.yml`,
 `scripts/release_smoke.py`, `scripts/mcp_smoke.py`, the lane selection in
 `scripts/ci_scope.py` and `scripts/driver_floors.py`, and the gate itself) need a
-maintainer's `APPROVED` review. A PR can publish a check with the same name, so
-the check is a reading aid and must not be made a required status check until it
-is posted from an identity a PR cannot impersonate (#378). A run triggered by
+maintainer's `APPROVED` review. A PR can publish a check with the same name, so this is an informational
+reading aid, not an authenticated merge gate. Keep it advisory and do not
+require it in branch protection (maintainer decision, 2026-10-23). A run triggered by
 Copilot's review waits as "action required": re-run it, or edit the PR body,
 after Copilot reviews.
 
