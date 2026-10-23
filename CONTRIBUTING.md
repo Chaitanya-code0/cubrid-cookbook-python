@@ -1056,14 +1056,13 @@ running it.
 
 ### Agent-review evidence gate
 
-> **Advisory only. Never make `agent-review` a required status check in its
-> current form.** It is a GitHub Actions check, and a pull request can publish a
-> passing check with the same name: by editing `agent-review.yml` (GitHub runs
-> the PR's copy of the workflow) or by adding another workflow with an
-> `agent-review` job. The check cannot prove who produced it. It can become a
-> required check only once its verdict is posted from an identity a pull request
-> cannot impersonate, such as a GitHub App (#378; Refs cubrid-lab/cubrid-mcp-server#345). Until
-> then it is a reading aid for the reviewer and the maintainer who merges.
+> **Advisory only; do not make `agent-review` a required status check.**
+> A pull request can imitate this GitHub Actions check by editing its workflow
+> or adding another job with the same name. The check is a review-evidence
+> reading aid for maintainers, not an authenticated merge gate. The maintainer
+> decision of 2026-10-23 is to keep it non-blocking; no GitHub App publisher or
+> branch-protection promotion is planned. Existing required CI and review
+> expectations are unchanged.
 
 `.github/workflows/agent-review.yml` publishes the `agent-review` check. The
 workflow and `scripts/agent_review_gate.py` are copies of the cubrid-mcp-server
@@ -1205,8 +1204,8 @@ maintainer decision recorded on an issue, not a pull request:
   the classifier did not select never blocks a merge.
 - **The `agent-review` check is advisory and not a required check.** A pull
   request can publish a check with the same name (see
-  [Agent-review evidence gate](#agent-review-evidence-gate)), so it must not be
-  added to the ruleset until #378 is resolved.
+  [Agent-review evidence gate](#agent-review-evidence-gate)). The check remains
+  non-blocking (maintainer decision, 2026-10-23).
 - **No required human approval and no required code-owner approval.** The
   project has a small maintainer team. A mandatory approval would block a
   maintainer's own pull request whenever the other maintainers are away, and
