@@ -8,8 +8,8 @@ edit_uri: edit/main/docs/
 theme:
   name: material
   # CUBRID Lab repository icon, pinned to an immutable cubrid-lab/brand commit.
-  logo: https://raw.githubusercontent.com/cubrid-lab/brand/8aa81b79f00ae936b03a9546f14f514c5e2554a7/dist/icons/cubrid-cookbook-python.svg
-  favicon: https://raw.githubusercontent.com/cubrid-lab/brand/8aa81b79f00ae936b03a9546f14f514c5e2554a7/dist/icons/cubrid-cookbook-python.svg
+  logo: https://raw.githubusercontent.com/cubrid-lab/brand/e55990a6a0b2c3b0d133985951d41e42b62a8588/dist/icons/cubrid-cookbook-python.svg
+  favicon: https://raw.githubusercontent.com/cubrid-lab/brand/e55990a6a0b2c3b0d133985951d41e42b62a8588/dist/icons/cubrid-cookbook-python.svg
   features:
     - navigation.tabs
     - navigation.sections
@@ -22,18 +22,21 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: deep orange
-      accent: orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: deep orange
-      accent: orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
+
+extra_css:
+  - stylesheets/brand.css
 
 nav:
   - Home: index.md
