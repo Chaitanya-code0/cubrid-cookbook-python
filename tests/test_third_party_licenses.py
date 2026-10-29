@@ -344,6 +344,7 @@ class LicenseClassification(unittest.TestCase):
         self.assertIn("scripts/build_license_inventory.py --python 3.12", record)
         self.assertRegex(record, r"--exclude-newer \d{4}-\d{2}-\d{2}T[\d:]+Z --write")
 
+
 class LicenseMetadataFallbacks(unittest.TestCase):
     class FakeDistribution:
         def __init__(self, values: dict[str, list[str] | None]):
