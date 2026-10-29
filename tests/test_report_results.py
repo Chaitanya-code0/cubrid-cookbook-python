@@ -342,5 +342,54 @@ class RunnerAggregationTests(unittest.TestCase):
         self.assertNotIn("junit", listed.stdout)
 
 
+class SuiteEntryTests(unittest.TestCase):
+    """Direct unit tests for the previously uncovered branches of report_results.suite_entry()."""
+
+    def test_junit_none_exit_zero_is_pass(self):
+        results_dir = Path("/tmp")
+        entry = report_results.suite_entry("script-suite", ["cmd"], 0, None, results_dir)
+        self.assertEqual(entry["status"], "PASS")
+        self.assertEqual(entry["counts"]["selected"], 1)
+        self.assertEqual(entry["counts"]["passed"], 1)
+        self.assertIsNone(entry["junit"])
+
+    def test_junit_none_nonzero_exit_is_fail(self):
+        results_dir = Path("/tmp")
+        entry = report_results.suite_entry("script-suite", ["cmd"], 1, None, results_dir)
+        self.assertEqual(entry["status"], "FAIL")
+        self.assertEqual(entry["counts"]["selected"], 1)
+        self.assertEqual(entry["counts"]["failed"], 1)
+        self.assertIsNone(entry["junit"])
+
+    def test_missing_junit_exit_zero_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results_dir = Path(tmp)
+            missing = results_dir / "no-such.xml"
+            entry = report_results.suite_entry("missing", ["cmd"], 0, missing, results_dir)
+            self.assertEqual(entry["status"], "INCOMPLETE")
+            self.assertEqual(sum(entry["counts"].values()), 0)
+            self.assertEqual(entry["junit"], "no-such.xml")
+
+    def test_missing_junit_nonzero_exit_is_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results_dir = Path(tmp)
+            missing = results_dir / "no-such.xml"
+            entry = report_results.suite_entry("missing", ["cmd"], 1, missing, results_dir)
+            self.assertEqual(entry["status"], "FAIL")
+            self.assertEqual(sum(entry["counts"].values()), 0)
+            self.assertEqual(entry["junit"], "no-such.xml")
+
+    def test_real_junit_counts_from_parse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results_dir = Path(tmp)
+            junit_path = results_dir / "real.xml"
+            junit_path.write_text(junit('<testcase classname="a" name="ok"/>'), encoding="utf-8")
+            entry = report_results.suite_entry("real", ["cmd"], 0, junit_path, results_dir)
+            self.assertEqual(entry["counts"]["passed"], 1)
+            self.assertEqual(entry["command"], ["cmd"])
+            self.assertEqual(entry["junit"], "real.xml")
+            self.assertEqual(entry["status"], "PASS")
+
+
 if __name__ == "__main__":
     unittest.main()
